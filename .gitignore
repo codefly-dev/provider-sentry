@@ -1,0 +1,4 @@
+/provider-sentry
+/dist/
+*.out
+.DS_Store
