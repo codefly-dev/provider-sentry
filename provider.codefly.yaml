@@ -1,0 +1,159 @@
+schema_version: codefly.provider-manifest/v0
+protocol_version: codefly.provider/v0
+state_schema_versions: [1]
+agent:
+  kind: codefly:provider
+  publisher: codefly.dev
+  name: sentry
+  version: 0.1.0
+default_deletion_policy: retain
+
+permissions:
+  required:
+    - id: project-observe
+      action: project.observe
+      resource: "provider:sentry/${workspace}/${environment}/${binding}/${resource_type}"
+      resource_type: sentry.project
+      reason: Read the Sentry project to attest identity, status, and accessibility.
+      risk: low
+      credential_purpose: setup
+    - id: client-key-observe
+      action: client-key.observe
+      resource: "provider:sentry/${workspace}/${environment}/${binding}/${resource_type}"
+      resource_type: sentry.client-key
+      reason: List the project client keys to select the public DSN. Never reads a secret.
+      risk: low
+      credential_purpose: setup
+
+resource_types:
+  # Both resource types are observe-only. No create/update/replace/delete/import
+  # action exists, so an admitted request can never express a remote mutation.
+  - id: sentry.project
+    actions: [observe, no-op, project-output]
+  - id: sentry.client-key
+    actions: [observe, no-op, blocked, manual, project-output]
+
+requests:
+  - id: project.retrieve
+    permissions: [project-observe]
+    resource_type: sentry.project
+    action: observe
+    origin_rule: api
+    operation: retrieve
+    method: GET
+    path_template: /api/0/projects/{organization_slug}/{project_slug}/
+    remote_id_parameters: [organization_slug, project_slug]
+    request_byte_budget: 4096
+    response_byte_budget: 65536
+    read_only: true
+    response_schema: project
+    credential_purposes: [setup]
+  - id: client-key.list
+    permissions: [client-key-observe]
+    resource_type: sentry.client-key
+    action: observe
+    origin_rule: api
+    operation: list
+    method: GET
+    path_template: /api/0/projects/{organization_slug}/{project_slug}/keys/
+    remote_id_parameters: [organization_slug, project_slug]
+    allowed_query_fields: [cursor]
+    request_byte_budget: 4096
+    response_byte_budget: 262144
+    read_only: true
+    response_schema: client_key_list
+    credential_purposes: [setup]
+
+origin_rules:
+  # Sentry SaaS default plus the US and DE regional silos. A binding selects the
+  # exact origin within this bounded ceiling; the host admits the exact
+  # scheme/host/port and binds it into the plan digest. Self-hosted origins are
+  # outside this SaaS ceiling and require explicit, per-deployment governed host
+  # admission (see internal/provider/origin.go); they are never blanket-admitted
+  # by a wildcard pattern here.
+  - id: api
+    defaults:
+      - https://sentry.io
+      - https://us.sentry.io
+      - https://de.sentry.io
+    schemes: [https]
+    host_patterns: [sentry.io, "*.sentry.io"]
+    ports: [443]
+    binding_override: within-rule
+    private_network_classes: [public]
+
+credential_purposes:
+  # The setup credential is a project-read token used only to observe the
+  # project and its client keys. It is never projected into any output.
+  - id: setup
+    minimum_scope: Read the project and its client keys only (project:read).
+    permitted_consumer: management
+  # The build credential is a separate org:ci token used only by the build
+  # consumer for release and source-map upload. It is projected as an opaque
+  # reference into the build-only configuration, never into runtime.
+  - id: build
+    minimum_scope: Upload releases and source maps only (org:ci).
+    permitted_consumer: build
+
+response_schemas:
+  # Only safe project identifiers are forwarded; everything else is dropped.
+  - id: project
+    fields:
+      - selector: {version: v1, path: "$.id"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.slug"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.name"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.platform"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.status"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.organization.slug"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.organization.id"}
+        disposition: FORWARD_SAFE
+  # Sentry returns a bare JSON array of client keys. Only the safe id/status and
+  # the public DSN are forwarded. The legacy `secret` and the credentialed
+  # `dsn.secret` sit beside `dsn.public` in the same object; both legacy secret
+  # locations are SUPPRESS_REPORT_PRESENCE across the whole array, so only their
+  # presence — never their bytes — is ever observable, and neither reaches
+  # provider code, logs, state, plan, receipt, diagnostic, cassette, or Git.
+  - id: client_key_list
+    fields:
+      - selector: {version: v1, path: "$[*].id"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].name"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].isActive"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].public"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].dsn.public"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].rateLimit.window"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].rateLimit.count"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].secret"}
+        disposition: SUPPRESS_REPORT_PRESENCE
+      - selector: {version: v1, path: "$[*].dsn.secret"}
+        disposition: SUPPRESS_REPORT_PRESENCE
+
+projections:
+  - id: error-tracking
+    contract: codefly.dev/configuration/error-tracking@1
+  - id: error-tracking-build
+    contract: codefly.dev/configuration/error-tracking-build@1
+
+sandbox:
+  network: deny
+
+state:
+  schema_versions: [1]
+  import_identity: false
+  replace: false
+  delete: false
+  stepwise_upgrade: false
+
+diagnostic_namespace: provider.sentry.
