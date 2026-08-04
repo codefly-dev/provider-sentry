@@ -19,8 +19,13 @@ never sees a client-key secret:
 - Sentry API calls go through the **host broker** (the `ProviderHost`
   `ExecuteRequest` callback), never a direct socket — the sandbox declares
   `network: deny`.
-- The **setup credential** (`project:read`) is an opaque handle used only to
-  observe the project and its keys. It is **never projected** into any output.
+- The **setup credential** (`org:read`) is an opaque handle used only to observe
+  the organization's projects and their client keys. It is **never projected**
+  into any output. The reads are organization-scoped because the broker binds
+  every request path to one remote-id segment (see [Broker path
+  model](#broker-path-model)), so the observable endpoints are the
+  organization's project list and client-key list rather than the two-segment
+  project-scoped endpoints.
 - The **build credential** (`org:ci`) is a *separate* opaque handle projected as
   an opaque reference into the **build-only** `error-tracking-build@1` contract
   (`SENTRY_AUTH_TOKEN`). It never reaches frontend or backend runtime.
@@ -43,6 +48,28 @@ is never blanket-admitted by a wildcard pattern. Wrong-region and credentialed-
 redirect behavior is a host/broker concern and is qualified live rather than
 assumed here.
 
+## Broker path model
+
+The host broker binds **every** request path parameter to a single planned
+remote id (`bindPath`), so an admitted request can address exactly one remote
+resource. Sentry's project-scoped endpoints
+(`/api/0/projects/{organization}/{project}/…`) carry two distinct path segments
+and are therefore not broker-executable. The provider observes through the
+**organization-scoped** endpoints instead — one remote-id segment (the
+organization slug) each:
+
+- `GET /api/0/organizations/{organization}/projects/` — the configured project
+  is selected by slug;
+- `GET /api/0/organizations/{organization}/project-keys/` — the project's client
+  keys are kept by `projectId`.
+
+This is why the setup credential is `org:read` rather than `project:read`.
+Sentry paginates these lists with a `Link`-header cursor, which the broker (a
+body-only response filter) does not surface to provider code; multi-page
+continuation is therefore host-driven via `ObserveRequest.cursor` /
+`MaterialObservation.next_cursor`. An observation the host cannot prove complete
+is a blocked/uncertain safety failure at plan time — never a silent `array[0]`.
+
 ## Client-key selection
 
 Selection is deterministic and never picks `array[0]`:
@@ -52,7 +79,9 @@ Selection is deterministic and never picks `array[0]`:
 2. otherwise, exactly one active key is selected;
 3. zero active keys → `MANUAL_ACTION`;
 4. multiple active keys → `BLOCKED` with the safe key ids;
-5. an explicit key that is missing or revoked → `BLOCKED`.
+5. an explicit key that is missing or revoked → `BLOCKED`;
+6. an incomplete client-key observation → `BLOCKED` (a truncated page can hide a
+   second active key).
 
 Repeated observation of the same keys yields the same plan digest (no diff).
 
@@ -66,18 +95,19 @@ this proves the same Plan/Apply/commit path works when there is no remote write.
 
 ## Scope diagnostics (honest)
 
-Project and client-key endpoints require project read scope; `org:ci` is
-appropriate for CI/release/source-map work. Sentry does not expose arbitrary
+The organization projects and client-key endpoints require `org:read`; `org:ci`
+is appropriate for CI/release/source-map work. Sentry does not expose arbitrary
 token-scope introspection, so build-token purpose fit is reported as
 **unverified** rather than asserted. Whether an `sntrys_` organization token can
-reach project-read endpoints is qualified in live acceptance, not assumed.
+reach these endpoints is qualified in live acceptance, not assumed.
 
 ## Protocol status (v0.1)
 
 The provider foundation (contracts, broker, coordinator, conformance) is green.
-This repository ships the complete **offline** surface; the broker-driven
-methods and the live/dogfood tiers land with the running host and a dedicated
-Sentry test project.
+This repository ships the complete **offline** surface and the broker-driven
+surface, cassette-tested in-process against `core/provider/broker`; the
+production host connection and the live/dogfood tiers land with the running
+coordinator and a dedicated Sentry test project.
 
 | Surface | State |
 |---|---|
@@ -86,8 +116,9 @@ Sentry test project.
 | `error-tracking@1` + `error-tracking-build@1` projection planning | **Implemented + tested** |
 | Response-policy filtering of poison client-key secrets | **Tested against `core/provider/responsepolicy`** |
 | Error / rate-limit → diagnostic mapping | **Implemented + tested** |
-| `Observe`, `ApplyAction`, `Doctor` (broker-driven) | **Pending** — need the running host; unimplemented from `sdk.Base` |
-| Tier 1 cassettes, Tier 3 live Sentry, Tier 4 starter dogfood | **Pending** — need the host and a dedicated Sentry test project |
+| `Observe`, `ApplyAction` (projection), `Doctor` (broker-driven) | **Implemented + Tier-1 cassette tested** against `core/provider/broker` |
+| Production host connection wiring | **Pending** — the standalone binary attaches no host; the broker-driven methods fail closed until the coordinator transport lands |
+| Tier 3 live Sentry, Tier 4 starter dogfood | **Pending** — need the host and a dedicated Sentry test project |
 | Starter `scripts/setup/sentry.sh` → non-writing shim | **Pending** — gated on plugin parity (tracked in `codefly-dev/module-saas-starter`) |
 
 See [`docs/mutation-pressure-test.md`](docs/mutation-pressure-test.md) for the

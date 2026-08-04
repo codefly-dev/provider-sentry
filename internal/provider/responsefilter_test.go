@@ -54,9 +54,9 @@ const (
 	poisonDSNSecret = "https://pub:srt_dsn_secret_value@sentry.io/1"
 )
 
-// poisonBody is a Sentry client-key list (a bare array) carrying both legacy
-// secret locations beside the public DSN.
-const poisonBody = `[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"Default","isActive":true,` +
+// poisonBody is a Sentry organization client-key list (a bare array) carrying
+// both legacy secret locations beside the public DSN and owning project id.
+const poisonBody = `[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","name":"Default","projectId":"1","isActive":true,` +
 	`"public":"pub_1","secret":"srt_legacy_secret_value",` +
 	`"rateLimit":{"window":60,"count":100},` +
 	`"dsn":{"public":"https://pub_1@sentry.io/1","secret":"https://pub:srt_dsn_secret_value@sentry.io/1"}}]`

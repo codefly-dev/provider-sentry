@@ -14,14 +14,14 @@ permissions:
       action: project.observe
       resource: "provider:sentry/${workspace}/${environment}/${binding}/${resource_type}"
       resource_type: sentry.project
-      reason: Read the Sentry project to attest identity, status, and accessibility.
+      reason: List the organization's projects to attest the configured project's identity, status, and accessibility.
       risk: low
       credential_purpose: setup
     - id: client-key-observe
       action: client-key.observe
       resource: "provider:sentry/${workspace}/${environment}/${binding}/${resource_type}"
       resource_type: sentry.client-key
-      reason: List the project client keys to select the public DSN. Never reads a secret.
+      reason: List the organization's client keys to select the project's public DSN. Never reads a secret.
       risk: low
       credential_purpose: setup
 
@@ -34,19 +34,26 @@ resource_types:
     actions: [observe, no-op, blocked, manual, project-output]
 
 requests:
-  - id: project.retrieve
+  # Both reads are organization-scoped so the request path carries a single
+  # remote-id segment (the organization slug). The host broker binds every
+  # path parameter to one planned remote id, so a project-scoped two-segment
+  # path ({organization}/{project}) is not admissible; the provider lists the
+  # organization's projects and client keys and selects the configured project
+  # by slug and its keys by project id.
+  - id: project.list
     permissions: [project-observe]
     resource_type: sentry.project
     action: observe
     origin_rule: api
-    operation: retrieve
+    operation: list
     method: GET
-    path_template: /api/0/projects/{organization_slug}/{project_slug}/
-    remote_id_parameters: [organization_slug, project_slug]
+    path_template: /api/0/organizations/{organization_slug}/projects/
+    remote_id_parameters: [organization_slug]
+    allowed_query_fields: [cursor]
     request_byte_budget: 4096
-    response_byte_budget: 65536
+    response_byte_budget: 262144
     read_only: true
-    response_schema: project
+    response_schema: project_list
     credential_purposes: [setup]
   - id: client-key.list
     permissions: [client-key-observe]
@@ -55,8 +62,8 @@ requests:
     origin_rule: api
     operation: list
     method: GET
-    path_template: /api/0/projects/{organization_slug}/{project_slug}/keys/
-    remote_id_parameters: [organization_slug, project_slug]
+    path_template: /api/0/organizations/{organization_slug}/project-keys/
+    remote_id_parameters: [organization_slug]
     allowed_query_fields: [cursor]
     request_byte_budget: 4096
     response_byte_budget: 262144
@@ -83,10 +90,13 @@ origin_rules:
     private_network_classes: [public]
 
 credential_purposes:
-  # The setup credential is a project-read token used only to observe the
-  # project and its client keys. It is never projected into any output.
+  # The setup credential is an organization-read token used only to observe the
+  # organization's projects and their client keys. The host broker binds each
+  # request to a single remote-id path segment, so the observable endpoints are
+  # organization-scoped (org:read) rather than project-scoped. It is never
+  # projected into any output.
   - id: setup
-    minimum_scope: Read the project and its client keys only (project:read).
+    minimum_scope: Read the organization's projects and client keys only (org:read).
     permitted_consumer: management
   # The build credential is a separate org:ci token used only by the build
   # consumer for release and source-map upload. It is projected as an opaque
@@ -96,34 +106,36 @@ credential_purposes:
     permitted_consumer: build
 
 response_schemas:
-  # Only safe project identifiers are forwarded; everything else is dropped.
-  - id: project
+  # The organization projects endpoint returns a bare JSON array of projects.
+  # Only safe project identifiers are forwarded; everything else is dropped. The
+  # provider selects the configured project by its slug.
+  - id: project_list
     fields:
-      - selector: {version: v1, path: "$.id"}
+      - selector: {version: v1, path: "$[*].id"}
         disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.slug"}
+      - selector: {version: v1, path: "$[*].slug"}
         disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.name"}
+      - selector: {version: v1, path: "$[*].name"}
         disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.platform"}
+      - selector: {version: v1, path: "$[*].platform"}
         disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.status"}
+      - selector: {version: v1, path: "$[*].status"}
         disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.organization.slug"}
-        disposition: FORWARD_SAFE
-      - selector: {version: v1, path: "$.organization.id"}
-        disposition: FORWARD_SAFE
-  # Sentry returns a bare JSON array of client keys. Only the safe id/status and
-  # the public DSN are forwarded. The legacy `secret` and the credentialed
-  # `dsn.secret` sit beside `dsn.public` in the same object; both legacy secret
-  # locations are SUPPRESS_REPORT_PRESENCE across the whole array, so only their
-  # presence — never their bytes — is ever observable, and neither reaches
-  # provider code, logs, state, plan, receipt, diagnostic, cassette, or Git.
+  # Sentry returns a bare JSON array of client keys. Only the safe id/status,
+  # owning project id, and the public DSN are forwarded; the provider keeps only
+  # the keys whose projectId is the selected project. The legacy `secret` and the
+  # credentialed `dsn.secret` sit beside `dsn.public` in the same object; both
+  # legacy secret locations are SUPPRESS_REPORT_PRESENCE across the whole array,
+  # so only their presence — never their bytes — is ever observable, and neither
+  # reaches provider code, logs, state, plan, receipt, diagnostic, cassette, or
+  # Git.
   - id: client_key_list
     fields:
       - selector: {version: v1, path: "$[*].id"}
         disposition: FORWARD_SAFE
       - selector: {version: v1, path: "$[*].name"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$[*].projectId"}
         disposition: FORWARD_SAFE
       - selector: {version: v1, path: "$[*].isActive"}
         disposition: FORWARD_SAFE

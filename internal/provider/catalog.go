@@ -14,24 +14,25 @@ import (
 const (
 	diagNamespace = "provider.sentry."
 
-	DiagInvalidInput      = diagNamespace + "invalid-input"
-	DiagAuthentication    = diagNamespace + "authentication"
-	DiagPermission        = diagNamespace + "permission"
-	DiagNotFound          = diagNamespace + "not-found"
-	DiagProjectInaccessible = diagNamespace + "project-inaccessible"
-	DiagNoActiveKey       = diagNamespace + "no-active-client-key"
-	DiagAmbiguousKey      = diagNamespace + "ambiguous-client-key"
-	DiagKeyMismatch       = diagNamespace + "client-key-mismatch"
-	DiagKeyRevoked        = diagNamespace + "client-key-revoked"
-	DiagDSNMismatch       = diagNamespace + "supplied-dsn-mismatch"
-	DiagSelfHostedAdmission = diagNamespace + "self-hosted-admission"
-	DiagWrongRegion       = diagNamespace + "wrong-region"
-	DiagRateLimit         = diagNamespace + "rate-limit"
-	DiagScopeUnverified   = diagNamespace + "scope-unverified"
-	DiagSchemaDrift       = diagNamespace + "schema-drift"
-	DiagValidation        = diagNamespace + "permanent-validation"
-	DiagTimeoutBeforeSend = diagNamespace + "timeout-before-send"
-	DiagOutcomeUnknown    = diagNamespace + "outcome-unknown"
+	DiagInvalidInput          = diagNamespace + "invalid-input"
+	DiagAuthentication        = diagNamespace + "authentication"
+	DiagPermission            = diagNamespace + "permission"
+	DiagNotFound              = diagNamespace + "not-found"
+	DiagProjectInaccessible   = diagNamespace + "project-inaccessible"
+	DiagNoActiveKey           = diagNamespace + "no-active-client-key"
+	DiagAmbiguousKey          = diagNamespace + "ambiguous-client-key"
+	DiagKeyMismatch           = diagNamespace + "client-key-mismatch"
+	DiagKeyRevoked            = diagNamespace + "client-key-revoked"
+	DiagDSNMismatch           = diagNamespace + "supplied-dsn-mismatch"
+	DiagSelfHostedAdmission   = diagNamespace + "self-hosted-admission"
+	DiagWrongRegion           = diagNamespace + "wrong-region"
+	DiagRateLimit             = diagNamespace + "rate-limit"
+	DiagObservationIncomplete = diagNamespace + "observation-incomplete"
+	DiagScopeUnverified       = diagNamespace + "scope-unverified"
+	DiagSchemaDrift           = diagNamespace + "schema-drift"
+	DiagValidation            = diagNamespace + "permanent-validation"
+	DiagTimeoutBeforeSend     = diagNamespace + "timeout-before-send"
+	DiagOutcomeUnknown        = diagNamespace + "outcome-unknown"
 )
 
 // diagnosticCodes is the exact, ordered set of codes the runtime advertises. It
@@ -40,8 +41,8 @@ var diagnosticCodes = []string{
 	DiagInvalidInput, DiagAuthentication, DiagPermission, DiagNotFound,
 	DiagProjectInaccessible, DiagNoActiveKey, DiagAmbiguousKey, DiagKeyMismatch,
 	DiagKeyRevoked, DiagDSNMismatch, DiagSelfHostedAdmission, DiagWrongRegion,
-	DiagRateLimit, DiagScopeUnverified, DiagSchemaDrift, DiagValidation,
-	DiagTimeoutBeforeSend, DiagOutcomeUnknown,
+	DiagRateLimit, DiagObservationIncomplete, DiagScopeUnverified, DiagSchemaDrift,
+	DiagValidation, DiagTimeoutBeforeSend, DiagOutcomeUnknown,
 }
 
 // buildCatalog derives the runtime catalog from the packaged manifest. The

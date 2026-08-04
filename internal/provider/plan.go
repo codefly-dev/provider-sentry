@@ -50,9 +50,16 @@ func (s *Server) Plan(_ context.Context, request *providerv0.PlanRequest) (*prov
 
 	var actions []*providerv0.PlanAction
 	var diagnostics []*basev0.FailureDiagnostic
-	if request.GetOutputTarget().GetContract() == configuration.ErrorTrackingBuildContract {
+	switch {
+	case request.GetOutputTarget().GetContract() == configuration.ErrorTrackingBuildContract:
 		actions, diagnostics = s.planBuild(in, request.GetOutputTarget(), desired.GetCredentialReferences(), accountID)
-	} else {
+	case incompleteObservation(request.GetObservation()):
+		// A client-key list that could not be fully enumerated must never be
+		// selected over: a truncated page can hide a second active key (turning a
+		// safe sole-active selection into a silent wrong choice) or the explicitly
+		// configured key. Block rather than select on an uncertain set.
+		actions, diagnostics = s.planUncertainKeys()
+	default:
 		actions, diagnostics = s.planRuntime(in, request.GetOutputTarget(), observedClientKeys(request.GetObservation()), accountID)
 	}
 
@@ -144,6 +151,26 @@ func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []
 		return []*providerv0.PlanAction{blocked}, []*basev0.FailureDiagnostic{
 			diag(basev0.FailureDiagnostic_ERROR, DiagKeyMismatch, "the explicitly configured client key is not owned by the configured project"),
 		}
+	}
+}
+
+// incompleteObservation reports whether an observation was delivered but the
+// host could not confirm it enumerated every client key. Selection over such a
+// set is unsafe, so it blocks.
+func incompleteObservation(observation *providerv0.MaterialObservation) bool {
+	return observation != nil && !observation.GetComplete()
+}
+
+// planUncertainKeys blocks client-key selection when the observation could not be
+// proven complete. It is the truncated/incomplete-cursor safety failure: never a
+// silent pick, always an explicit block.
+func (s *Server) planUncertainKeys() ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
+	blocked, _ := sdk.NewBlockedAction("client-key-uncertain", 0, resourceClientKey)
+	blocked.Ownership = providerv0.Ownership_OWNERSHIP_OBSERVED
+	blocked.Summary = "the client-key list could not be fully enumerated; selection is blocked until the observation is complete"
+	return []*providerv0.PlanAction{blocked}, []*basev0.FailureDiagnostic{
+		diag(basev0.FailureDiagnostic_ERROR, DiagObservationIncomplete,
+			"the client-key observation is incomplete; refusing to select over a possibly-truncated list"),
 	}
 }
 

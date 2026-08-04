@@ -6,9 +6,9 @@
 // through the host broker's ProviderHost callbacks. It is the observe/project
 // counterexample to Stripe: it declares no mutating request, holds no Sentry
 // management token, and never receives a client-key `secret` or `dsn.secret`.
-// This package implements the offline surface (information, validate, plan,
-// upgrade); the broker-driven surface (Observe, ApplyAction, Doctor) lands with
-// the host runtime and cassettes.
+// The offline surface (information, validate, plan, upgrade) runs without any
+// host; the broker-driven surface (Observe, ApplyAction, Doctor) drives the
+// attached ProviderHost callback channel, which the host transport supplies.
 package provider
 
 import (
@@ -30,10 +30,11 @@ type Identity struct {
 	ManifestDigest string
 }
 
-// Server implements providerv0.ProviderServer. The offline methods are
-// implemented here; GetProviderInformation is served by the embedded sdk.Base,
-// and the broker-driven methods (Observe, ApplyAction, Doctor) remain
-// unimplemented until the host runtime is available.
+// Server implements providerv0.ProviderServer. The offline methods (information,
+// validate, plan, upgrade) never touch the network. The broker-driven methods
+// (Observe, ApplyAction, Doctor) reach Sentry only through the attached host
+// callback channel; a server built without one still serves the offline surface
+// but fails those methods closed.
 type Server struct {
 	*sdk.Base
 	manifest       *manifest.Manifest
@@ -41,6 +42,7 @@ type Server struct {
 	artifactDigest string
 	manifestDigest string
 	catalogDigest  string
+	host           Host
 }
 
 var _ providerv0.ProviderServer = (*Server)(nil)
@@ -49,7 +51,7 @@ var _ providerv0.ProviderServer = (*Server)(nil)
 // verified artifact identity. It fails closed when the identity does not match
 // the packaged manifest, so a tampered manifest or mismatched descriptor can
 // never be advertised as authentic.
-func NewServer(manifestBytes []byte, id Identity) (*Server, error) {
+func NewServer(manifestBytes []byte, id Identity, opts ...Option) (*Server, error) {
 	m, err := manifest.Load(manifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("packaged manifest is invalid: %w", err)
@@ -96,12 +98,16 @@ func NewServer(manifestBytes []byte, id Identity) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	server := &Server{
 		Base:           base,
 		manifest:       m,
 		catalog:        catalog,
 		artifactDigest: id.ArtifactDigest,
 		manifestDigest: id.ManifestDigest,
 		catalogDigest:  catalog.GetDigest(),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(server)
+	}
+	return server, nil
 }
