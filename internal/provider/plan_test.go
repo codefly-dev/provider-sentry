@@ -75,6 +75,10 @@ func TestPlanSkipsInactiveLeadingKey(t *testing.T) {
 	if got := project.GetOutput().GetValues()["SENTRY_DSN"].GetPublicValue().GetStringValue(); got != dsnB {
 		t.Fatalf("selected DSN = %q, want the active key's DSN %q", got, dsnB)
 	}
+	if noop := findAction(response, providerv0.ActionType_ACTION_TYPE_NO_OP); noop == nil ||
+		!strings.Contains(noop.GetSummary(), "sole active") {
+		t.Fatalf("sole-active selection must be reported as such, got %q", noop.GetSummary())
+	}
 }
 
 func TestPlanManualWhenNoActiveKey(t *testing.T) {
@@ -100,6 +104,15 @@ func TestPlanExplicitKeySelection(t *testing.T) {
 	}
 	if got := project.GetOutput().GetValues()["SENTRY_DSN"].GetPublicValue().GetStringValue(); got != dsnB {
 		t.Fatalf("explicit selection projected %q, want %q", got, dsnB)
+	}
+	// The selection is explicit, not sole-active: two keys are active. The
+	// summary must report the explicit basis, never claim a sole active key.
+	noop := findAction(response, providerv0.ActionType_ACTION_TYPE_NO_OP)
+	if noop == nil || !strings.Contains(noop.GetSummary(), "explicitly configured") {
+		t.Fatalf("explicit selection must be reported as such, got %q", noop.GetSummary())
+	}
+	if strings.Contains(noop.GetSummary(), "sole active") {
+		t.Fatalf("explicit selection must not claim a sole active key, got %q", noop.GetSummary())
 	}
 }
 

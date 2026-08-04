@@ -51,7 +51,7 @@ func (s *Server) Plan(_ context.Context, request *providerv0.PlanRequest) (*prov
 	var actions []*providerv0.PlanAction
 	var diagnostics []*basev0.FailureDiagnostic
 	if request.GetOutputTarget().GetContract() == configuration.ErrorTrackingBuildContract {
-		actions, diagnostics = s.planBuild(in, request.GetOutputTarget(), desired.GetCredentialReferences(), accountID)
+		actions, diagnostics = s.planBuild(in, request.GetOutputTarget(), desired.GetCredentialReferences())
 	} else {
 		actions, diagnostics = s.planRuntime(in, request.GetOutputTarget(), observedClientKeys(request.GetObservation()), accountID)
 	}
@@ -98,7 +98,11 @@ func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []
 		noop, _ := sdk.NewNoOpAction("client-key-selected", 0, resourceClientKey)
 		noop.Ownership = providerv0.Ownership_OWNERSHIP_OBSERVED
 		noop.RemoteIdentity = remoteIdentity(resourceClientKey, sel.Key.ID, accountID)
-		noop.Summary = fmt.Sprintf("selected the sole active client key %s; observe-only, no remote mutation", sel.Key.ID)
+		basis := "the sole active"
+		if sel.Explicit {
+			basis = "the explicitly configured"
+		}
+		noop.Summary = fmt.Sprintf("selected %s client key %s; observe-only, no remote mutation", basis, sel.Key.ID)
 		actions := []*providerv0.PlanAction{noop}
 
 		var diagnostics []*basev0.FailureDiagnostic
@@ -174,7 +178,7 @@ func (s *Server) planErrorTracking(in inputs, target *providerv0.OutputTarget, k
 // separate org:ci build credential. The build token is an opaque reference in a
 // build consumer only; it never reaches runtime, and the setup token is never
 // projected here or anywhere.
-func (s *Server) planBuild(in inputs, target *providerv0.OutputTarget, references []*providerv0.OpaqueReference, accountID string) ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
+func (s *Server) planBuild(in inputs, target *providerv0.OutputTarget, references []*providerv0.OpaqueReference) ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
 	buildRef := referenceByPurpose(references, providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_BUILD)
 	if buildRef == nil {
 		noop, _ := sdk.NewNoOpAction("build-credential-absent", 0, resourceProject)

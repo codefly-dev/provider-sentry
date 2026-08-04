@@ -94,6 +94,7 @@ const (
 type selection struct {
 	Outcome   selectionOutcome
 	Key       observedClientKey
+	Explicit  bool     // the key was chosen by an explicit client_key_id, not by sole-active
 	ActiveIDs []string // safe ids of the active candidates (for ambiguity)
 }
 
@@ -113,9 +114,9 @@ func selectClientKey(keys []observedClientKey, explicitID string) selection {
 		for _, k := range keys {
 			if k.ID == explicitID {
 				if !k.Active {
-					return selection{Outcome: selectionExplicitRevoked, Key: k}
+					return selection{Outcome: selectionExplicitRevoked, Key: k, Explicit: true}
 				}
-				return selection{Outcome: selectionSelected, Key: k}
+				return selection{Outcome: selectionSelected, Key: k, Explicit: true}
 			}
 		}
 		return selection{Outcome: selectionExplicitMissing}
