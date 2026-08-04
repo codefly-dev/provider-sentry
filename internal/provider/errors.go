@@ -19,12 +19,15 @@ func ClassifySentryError(e SentryError) string {
 	detail := strings.ToLower(strings.TrimSpace(e.Detail))
 
 	switch {
+	// A rate-limit signal is transient and authoritative: an explicit
+	// Retry-After / X-Sentry-Rate-Limit header (or a 429) means back off, even
+	// when the status is a 403 that would otherwise read as a permission denial.
+	case e.RetryAfter || e.StatusCode == 429 || strings.Contains(detail, "rate limit"):
+		return DiagRateLimit
 	case e.StatusCode == 401 || strings.Contains(detail, "authentication"):
 		return DiagAuthentication
 	case e.StatusCode == 403 || strings.Contains(detail, "permission") || strings.Contains(detail, "scope"):
 		return DiagPermission
-	case e.StatusCode == 429 || e.RetryAfter || strings.Contains(detail, "rate limit"):
-		return DiagRateLimit
 	case e.StatusCode == 404 || strings.Contains(detail, "not found"):
 		return DiagNotFound
 	case e.StatusCode >= 500:

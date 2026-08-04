@@ -36,16 +36,17 @@ func (s *Server) Plan(_ context.Context, request *providerv0.PlanRequest) (*prov
 
 	accountID := ctx.GetAccountIdentity()
 
-	// Project accessibility/identity gate applies before any projection: an
-	// inaccessible or mismatched project blocks rather than projects.
-	if observed := observedProjectFrom(request.GetObservation()); observed != nil {
-		if blocked := s.gateProject(in, *observed, accountID); blocked != nil {
-			plan, err := s.assemblePlan(request, binding, []*providerv0.PlanAction{blocked.action})
-			if err != nil {
-				return nil, err
-			}
-			return &providerv0.PlanResponse{Plan: plan, Diagnostics: []*basev0.FailureDiagnostic{blocked.diagnostic}}, nil
+	// Project accessibility/identity gate applies before any selection or
+	// projection: the configured project must be positively confirmed by the
+	// observation — present, accessible, and identity-matched. Absence, an
+	// inaccessible project, or an unconfirmed/mismatched identity all block
+	// rather than fall through to a projection.
+	if blocked := s.gateProject(in, observedProjectFrom(request.GetObservation()), accountID); blocked != nil {
+		plan, err := s.assemblePlan(request, binding, []*providerv0.PlanAction{blocked.action})
+		if err != nil {
+			return nil, err
 		}
+		return &providerv0.PlanResponse{Plan: plan, Diagnostics: []*basev0.FailureDiagnostic{blocked.diagnostic}}, nil
 	}
 
 	var actions []*providerv0.PlanAction
@@ -68,21 +69,33 @@ type blockedProject struct {
 	diagnostic *basev0.FailureDiagnostic
 }
 
-// gateProject blocks when the observed project is inaccessible or is not the
-// configured organization/project. Identity is matched on the configured slugs,
-// never inferred.
-func (s *Server) gateProject(in inputs, observed observedProject, accountID string) *blockedProject {
-	mismatch := (observed.Slug != "" && observed.Slug != in.Project) ||
-		(observed.OrgSlug != "" && observed.OrgSlug != in.Organization)
-	if observed.Accessible && !mismatch {
+// gateProject blocks unless the observation positively confirms the configured
+// project: it must be present, accessible, and exactly the configured
+// organization/project. A nil observation (the project was never observed), an
+// inaccessible project, or an identity that is not confirmed to match all block.
+// Identity is matched on the configured slugs, never inferred, and a missing
+// observed slug is treated as unconfirmed rather than as a match.
+func (s *Server) gateProject(in inputs, observed *observedProject, accountID string) *blockedProject {
+	if observed != nil && observed.Accessible &&
+		observed.Slug == in.Project && observed.OrgSlug == in.Organization {
 		return nil
 	}
 	action, _ := sdk.NewBlockedAction("project-inaccessible", 0, resourceProject)
 	action.Ownership = providerv0.Ownership_OWNERSHIP_OBSERVED
-	action.RemoteIdentity = remoteIdentity(resourceProject, observed.RemoteID, accountID)
-	message := fmt.Sprintf("the configured project %s/%s is not accessible with the setup credential", in.Organization, in.Project)
-	if mismatch {
+	var remoteID string
+	if observed != nil {
+		remoteID = observed.RemoteID
+	}
+	action.RemoteIdentity = remoteIdentity(resourceProject, remoteID, accountID)
+
+	var message string
+	switch {
+	case observed == nil:
+		message = fmt.Sprintf("the configured project %s/%s was not observed and cannot be confirmed accessible with the setup credential", in.Organization, in.Project)
+	case observed.Slug != in.Project || observed.OrgSlug != in.Organization:
 		message = fmt.Sprintf("the observed project (%s/%s) is not the configured project (%s/%s)", observed.OrgSlug, observed.Slug, in.Organization, in.Project)
+	default:
+		message = fmt.Sprintf("the configured project %s/%s is not accessible with the setup credential", in.Organization, in.Project)
 	}
 	action.Summary = message
 	return &blockedProject{action: action, diagnostic: diag(basev0.FailureDiagnostic_ERROR, DiagProjectInaccessible, message)}
@@ -110,7 +123,11 @@ func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []
 			diagnostics = append(diagnostics, diag(basev0.FailureDiagnostic_WARNING, DiagDSNMismatch,
 				"the operator-supplied DSN does not match the selected client key's public DSN"))
 		}
-		if output := s.planErrorTracking(in, target, sel.Key, uint32(len(actions))); output != nil {
+		output, projectionDiag := s.planErrorTracking(in, target, sel.Key, uint32(len(actions)))
+		if projectionDiag != nil {
+			diagnostics = append(diagnostics, projectionDiag)
+		}
+		if output != nil {
 			actions = append(actions, output)
 		}
 		return actions, diagnostics
@@ -153,10 +170,17 @@ func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []
 
 // planErrorTracking projects error-tracking@1 from the selected key's public
 // DSN. The DSN is a public, browser-exposable value; no management token is ever
-// projected.
-func (s *Server) planErrorTracking(in inputs, target *providerv0.OutputTarget, key observedClientKey, position uint32) *providerv0.PlanAction {
-	if target.GetContract() != configuration.ErrorTrackingContract || target.GetTargetGeneration() == 0 || key.PublicDSN == "" {
-		return nil
+// projected. It returns (nil, nil) when the target is not a runtime
+// error-tracking projection (nothing to project), but a selected key that
+// carries no public DSN is schema drift: it returns a diagnostic rather than
+// silently omitting the projection while the plan still claims a key was chosen.
+func (s *Server) planErrorTracking(in inputs, target *providerv0.OutputTarget, key observedClientKey, position uint32) (*providerv0.PlanAction, *basev0.FailureDiagnostic) {
+	if target.GetContract() != configuration.ErrorTrackingContract || target.GetTargetGeneration() == 0 {
+		return nil, nil
+	}
+	if key.PublicDSN == "" {
+		return nil, diag(basev0.FailureDiagnostic_ERROR, DiagSchemaDrift,
+			"the selected client key carries no public DSN; error-tracking@1 cannot be projected")
 	}
 	values := map[string]*providerv0.OutputValue{
 		"SENTRY_DSN": publicOutput(key.PublicDSN),
@@ -171,7 +195,7 @@ func (s *Server) planErrorTracking(in inputs, target *providerv0.OutputTarget, k
 	if action != nil {
 		action.Summary = "project error-tracking@1 (public DSN for browser and backend; no management token)"
 	}
-	return action
+	return action, nil
 }
 
 // planBuild projects the build-only error-tracking-build@1 contract from the

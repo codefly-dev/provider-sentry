@@ -13,6 +13,7 @@ func TestClassifySentryError(t *testing.T) {
 		{"scope", SentryError{StatusCode: 200, Detail: "insufficient scope"}, DiagPermission},
 		{"rate limit status", SentryError{StatusCode: 429}, DiagRateLimit},
 		{"rate limit header", SentryError{StatusCode: 200, RetryAfter: true}, DiagRateLimit},
+		{"rate limit over permission", SentryError{StatusCode: 403, RetryAfter: true}, DiagRateLimit},
 		{"not found", SentryError{StatusCode: 404}, DiagNotFound},
 		{"server", SentryError{StatusCode: 503}, DiagOutcomeUnknown},
 		{"validation", SentryError{StatusCode: 400}, DiagValidation},

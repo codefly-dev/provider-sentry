@@ -39,12 +39,3 @@ func TestSaaSOriginsAreWithinManifestCeiling(t *testing.T) {
 		}
 	}
 }
-
-func TestIsSaaS(t *testing.T) {
-	if parseOrigin("https://sentry.acme.internal").isSaaS() {
-		t.Fatal("a self-hosted origin is not a SaaS origin")
-	}
-	if !parseOrigin("https://us.sentry.io").isSaaS() {
-		t.Fatal("a regional origin is a SaaS origin")
-	}
-}

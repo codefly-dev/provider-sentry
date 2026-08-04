@@ -155,6 +155,51 @@ func TestPlanBlocksProjectIdentityMismatch(t *testing.T) {
 	}
 }
 
+// TestPlanBlocksWhenProjectUnobserved proves the accessibility gate fails closed
+// when the observation carries client keys but no project resource: the project
+// is unconfirmed, so no DSN may be projected even though an active key exists.
+func TestPlanBlocksWhenProjectUnobserved(t *testing.T) {
+	obs := observation(clientKeyResource(keyA, true, dsnA))
+	response := plan(t, planRequest(validInput(), obs, runtimeTarget()))
+	if !hasActionType(response, providerv0.ActionType_ACTION_TYPE_BLOCKED) || !hasDiagnostic(response.GetDiagnostics(), DiagProjectInaccessible) {
+		t.Fatal("an unobserved project must BLOCK before any projection")
+	}
+	if hasActionType(response, providerv0.ActionType_ACTION_TYPE_PROJECT_OUTPUT) {
+		t.Fatal("an unconfirmed project must not project a DSN")
+	}
+}
+
+// TestPlanBlocksAccessibleButUnconfirmedIdentity proves that an accessible
+// project whose observed identity is not positively confirmed (a missing slug)
+// blocks rather than being adopted: a match is never inferred from silence.
+func TestPlanBlocksAccessibleButUnconfirmedIdentity(t *testing.T) {
+	obs := observation(projectResource(true, "acme", ""), clientKeyResource(keyA, true, dsnA))
+	response := plan(t, planRequest(validInput(), obs, runtimeTarget()))
+	if !hasActionType(response, providerv0.ActionType_ACTION_TYPE_BLOCKED) || !hasDiagnostic(response.GetDiagnostics(), DiagProjectInaccessible) {
+		t.Fatal("an accessible project with an unconfirmed identity must BLOCK")
+	}
+	if hasActionType(response, providerv0.ActionType_ACTION_TYPE_PROJECT_OUTPUT) {
+		t.Fatal("an unconfirmed identity must not project a DSN")
+	}
+}
+
+// TestPlanReportsSelectedKeyWithoutDSN proves that a selected active key that
+// carries no public DSN surfaces schema drift instead of silently omitting the
+// error-tracking projection while the plan still claims a key was selected.
+func TestPlanReportsSelectedKeyWithoutDSN(t *testing.T) {
+	obs := observation(projectResource(true, "acme", "web"), clientKeyResource(keyA, true, ""))
+	response := plan(t, planRequest(validInput(), obs, runtimeTarget()))
+	if !hasActionType(response, providerv0.ActionType_ACTION_TYPE_NO_OP) {
+		t.Fatal("the selected key is still a NO_OP")
+	}
+	if hasActionType(response, providerv0.ActionType_ACTION_TYPE_PROJECT_OUTPUT) {
+		t.Fatal("a key with no public DSN must not project error-tracking@1")
+	}
+	if !hasDiagnostic(response.GetDiagnostics(), DiagSchemaDrift) {
+		t.Fatal("a selected key with no public DSN must report schema drift, not be silently dropped")
+	}
+}
+
 func TestPlanDSNMismatchWarnsButProjects(t *testing.T) {
 	input := validInput()
 	input["expected_dsn"] = str("https://different@sentry.io/9")

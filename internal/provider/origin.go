@@ -68,8 +68,3 @@ func parseOrigin(raw string) origin {
 	}
 	return o
 }
-
-// isSaaS reports whether the origin is one of the admitted Sentry SaaS silos.
-func (o origin) isSaaS() bool {
-	return o.Region == regionDefault || o.Region == regionUS || o.Region == regionDE
-}
