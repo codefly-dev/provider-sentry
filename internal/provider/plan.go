@@ -54,7 +54,8 @@ func (s *Server) Plan(_ context.Context, request *providerv0.PlanRequest) (*prov
 	if request.GetOutputTarget().GetContract() == configuration.ErrorTrackingBuildContract {
 		actions, diagnostics = s.planBuild(in, request.GetOutputTarget(), desired.GetCredentialReferences())
 	} else {
-		actions, diagnostics = s.planRuntime(in, request.GetOutputTarget(), observedClientKeys(request.GetObservation()), accountID)
+		observation := request.GetObservation()
+		actions, diagnostics = s.planRuntime(in, request.GetOutputTarget(), observedClientKeys(observation), observation.GetComplete(), accountID)
 	}
 
 	plan, err := s.assemblePlan(request, binding, actions)
@@ -104,8 +105,23 @@ func (s *Server) gateProject(in inputs, observed *observedProject, accountID str
 // planRuntime selects the client key and projects the runtime error-tracking
 // contract. Zero active keys is a manual action; ambiguity or an explicit key
 // that is missing/revoked blocks. Only a uniquely selected active key projects.
-func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []observedClientKey, accountID string) ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
+func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []observedClientKey, observationComplete bool, accountID string) ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
 	sel := selectClientKey(keys, in.ClientKeyID)
+
+	// A sole-active selection is only safe over a complete list: a second active
+	// key hidden by a truncated/incomplete observation would otherwise be picked
+	// silently. An explicit, project-owned key is still safe — it was found by
+	// id, not inferred from the list being exhaustive.
+	if sel.Outcome == selectionSelected && !sel.Explicit && !observationComplete {
+		blocked, _ := sdk.NewBlockedAction("client-key-incomplete", 0, resourceClientKey)
+		blocked.Ownership = providerv0.Ownership_OWNERSHIP_OBSERVED
+		blocked.Summary = "the client-key observation is incomplete; refusing to select a sole-active key from a possibly-truncated list"
+		return []*providerv0.PlanAction{blocked}, []*basev0.FailureDiagnostic{
+			diag(basev0.FailureDiagnostic_ERROR, DiagOutcomeUnknown,
+				"client-key observation is incomplete; cannot safely select a sole-active key. Set client_key_id or retry once the full list is available"),
+		}
+	}
+
 	switch sel.Outcome {
 	case selectionSelected:
 		noop, _ := sdk.NewNoOpAction("client-key-selected", 0, resourceClientKey)
