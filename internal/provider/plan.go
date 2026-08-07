@@ -41,7 +41,7 @@ func (s *Server) Plan(_ context.Context, request *providerv0.PlanRequest) (*prov
 	// observation — present, accessible, and identity-matched. Absence, an
 	// inaccessible project, or an unconfirmed/mismatched identity all block
 	// rather than fall through to a projection.
-	if blocked := s.gateProject(in, observedProjectFrom(request.GetObservation()), accountID); blocked != nil {
+	if blocked := s.gateProject(in, observedProjectFrom(request.GetObservation()), request.GetObservation().GetComplete(), accountID); blocked != nil {
 		plan, err := s.assemblePlan(request, binding, []*providerv0.PlanAction{blocked.action})
 		if err != nil {
 			return nil, err
@@ -75,8 +75,11 @@ type blockedProject struct {
 // organization/project. A nil observation (the project was never observed), an
 // inaccessible project, or an identity that is not confirmed to match all block.
 // Identity is matched on the configured slugs, never inferred, and a missing
-// observed slug is treated as unconfirmed rather than as a match.
-func (s *Server) gateProject(in inputs, observed *observedProject, accountID string) *blockedProject {
+// observed slug is treated as unconfirmed rather than as a match. An absent
+// project over an incomplete observation is an unknown outcome (a transient read
+// failure), not a definitive inaccessibility, and is reported as such so a
+// rate-limited read is not misread as a permission problem.
+func (s *Server) gateProject(in inputs, observed *observedProject, complete bool, accountID string) *blockedProject {
 	if observed != nil && observed.Accessible &&
 		observed.Slug == in.Project && observed.OrgSlug == in.Organization {
 		return nil
@@ -90,7 +93,11 @@ func (s *Server) gateProject(in inputs, observed *observedProject, accountID str
 	action.RemoteIdentity = remoteIdentity(resourceProject, remoteID, accountID)
 
 	var message string
+	code := DiagProjectInaccessible
 	switch {
+	case observed == nil && !complete:
+		message = fmt.Sprintf("the configured project %s/%s could not be read and the observation is incomplete; retry before treating it as inaccessible", in.Organization, in.Project)
+		code = DiagOutcomeUnknown
 	case observed == nil:
 		message = fmt.Sprintf("the configured project %s/%s was not observed and cannot be confirmed accessible with the setup credential", in.Organization, in.Project)
 	case observed.Slug != in.Project || observed.OrgSlug != in.Organization:
@@ -99,7 +106,7 @@ func (s *Server) gateProject(in inputs, observed *observedProject, accountID str
 		message = fmt.Sprintf("the configured project %s/%s is not accessible with the setup credential", in.Organization, in.Project)
 	}
 	action.Summary = message
-	return &blockedProject{action: action, diagnostic: diag(basev0.FailureDiagnostic_ERROR, DiagProjectInaccessible, message)}
+	return &blockedProject{action: action, diagnostic: diag(basev0.FailureDiagnostic_ERROR, code, message)}
 }
 
 // planRuntime selects the client key and projects the runtime error-tracking
@@ -108,17 +115,20 @@ func (s *Server) gateProject(in inputs, observed *observedProject, accountID str
 func (s *Server) planRuntime(in inputs, target *providerv0.OutputTarget, keys []observedClientKey, observationComplete bool, accountID string) ([]*providerv0.PlanAction, []*basev0.FailureDiagnostic) {
 	sel := selectClientKey(keys, in.ClientKeyID)
 
-	// A sole-active selection is only safe over a complete list: a second active
-	// key hidden by a truncated/incomplete observation would otherwise be picked
-	// silently. An explicit, project-owned key is still safe — it was found by
-	// id, not inferred from the list being exhaustive.
-	if sel.Outcome == selectionSelected && !sel.Explicit && !observationComplete {
+	// Any conclusion that depends on having seen the whole list is unsafe over an
+	// incomplete observation: a sole-active pick, a "no active key" verdict, and
+	// an "explicit key not found" verdict could all be overturned by an unread
+	// page. Block those as an unknown outcome rather than emit a definitive
+	// verdict (including the misleading "create a client key" manual action). A
+	// key confirmed by a positive find — an explicit active or explicit revoked
+	// key — and an already-ambiguous result stay definitive regardless.
+	if !observationComplete && exhaustivenessDependent(sel) {
 		blocked, _ := sdk.NewBlockedAction("client-key-incomplete", 0, resourceClientKey)
 		blocked.Ownership = providerv0.Ownership_OWNERSHIP_OBSERVED
-		blocked.Summary = "the client-key observation is incomplete; refusing to select a sole-active key from a possibly-truncated list"
+		blocked.Summary = "the client-key observation is incomplete; refusing to draw a selection conclusion from a possibly-truncated list"
 		return []*providerv0.PlanAction{blocked}, []*basev0.FailureDiagnostic{
 			diag(basev0.FailureDiagnostic_ERROR, DiagOutcomeUnknown,
-				"client-key observation is incomplete; cannot safely select a sole-active key. Set client_key_id or retry once the full list is available"),
+				"client-key observation is incomplete; cannot safely determine the client key. Set client_key_id or retry once the full list is available"),
 		}
 	}
 

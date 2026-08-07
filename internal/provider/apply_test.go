@@ -2,10 +2,12 @@ package provider
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
 	"github.com/codefly-dev/core/provider/configuration"
+	providerstate "github.com/codefly-dev/core/provider/state"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -138,5 +140,82 @@ func TestApplyProjectionRequiresDurableCommit(t *testing.T) {
 
 	if _, err := server.ApplyAction(t.Context(), applyRequest(plan, action)); err == nil {
 		t.Fatal("a projection the host did not commit must fail")
+	}
+}
+
+func TestApplyRejectsProjectionNotInBoundPlan(t *testing.T) {
+	// A well-formed PROJECT_OUTPUT action that the bound plan does not carry must
+	// be refused before any callback — the provider applies only what its own
+	// Plan authored, which is what keeps a forged proposal (e.g. one bearing the
+	// setup token) from reaching the host.
+	_, action := projectOutputAction(t, runtimeTarget())
+	host := newFakeHost(loadManifest(t))
+	server := hostServer(t, host)
+
+	request := &providerv0.ApplyActionRequest{
+		Context: hostContext(validInput()),
+		Plan:    &providerv0.OrderedPlan{}, // does not contain the action
+		Action:  action,
+	}
+	if _, err := server.ApplyAction(t.Context(), request); err == nil {
+		t.Fatal("a projection action absent from the bound plan must be rejected")
+	}
+	if len(host.proposals) != 0 {
+		t.Fatal("a rejected projection must make no host callback")
+	}
+}
+
+func TestApplyStampsProjectionOntoPriorState(t *testing.T) {
+	plan, action := projectOutputAction(t, runtimeTarget())
+	host := newFakeHost(loadManifest(t))
+	host.proposeGeneration = 7
+	server := hostServer(t, host)
+
+	prior := providerstate.WrapV1(&providerv0.ProviderStateV1{
+		StateSchemaVersion:    1,
+		Binding:               binding(),
+		ProviderId:            "codefly.dev/sentry",
+		ProviderVersion:       "0.1.0",
+		ManifestSchemaVersion: "codefly.provider-manifest/v0",
+		ManifestDigest:        "sha256:" + strings.Repeat("a", 64),
+		ArtifactDigest:        "sha256:" + strings.Repeat("b", 64),
+		Ownership:             providerv0.Ownership_OWNERSHIP_OBSERVED,
+	})
+	request := &providerv0.ApplyActionRequest{Context: hostContext(validInput()), Plan: plan, Action: action, State: prior}
+
+	response, err := server.ApplyAction(t.Context(), request)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	v1 := response.GetNextState().GetV1()
+	if v1.GetOutputGeneration() != 7 {
+		t.Fatalf("committed output generation not recorded: %d", v1.GetOutputGeneration())
+	}
+	if v1.GetOutputContract() != configuration.ErrorTrackingContract {
+		t.Fatalf("output contract not recorded: %q", v1.GetOutputContract())
+	}
+}
+
+func TestApplyRecordsProjectionWithoutPriorState(t *testing.T) {
+	// With no prior state threaded, the committed generation must still be
+	// recorded on a freshly minted, valid state — never silently dropped.
+	plan, action := projectOutputAction(t, runtimeTarget())
+	host := newFakeHost(loadManifest(t))
+	host.proposeGeneration = 3
+	server := hostServer(t, host)
+
+	response, err := server.ApplyAction(t.Context(), applyRequest(plan, action)) // no State
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	next := response.GetNextState()
+	if next == nil {
+		t.Fatal("a committed projection must be recorded even without a prior state")
+	}
+	if next.GetV1().GetOutputGeneration() != 3 {
+		t.Fatalf("committed output generation not recorded: %d", next.GetV1().GetOutputGeneration())
+	}
+	if err := providerstate.Validate(next.GetV1(), 1); err != nil {
+		t.Fatalf("minted next state must be valid: %v", err)
 	}
 }

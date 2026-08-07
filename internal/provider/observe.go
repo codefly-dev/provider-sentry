@@ -336,3 +336,21 @@ func selectClientKey(keys []observedClientKey, explicitID string) selection {
 		return selection{Outcome: selectionAmbiguous, ActiveIDs: ids}
 	}
 }
+
+// exhaustivenessDependent reports whether a selection outcome relies on having
+// observed the complete client-key list. Sole-active (the key is the only active
+// one), no-active (none is active anywhere), and explicit-missing (the key
+// exists nowhere) are all valid only over a complete list; an unread page could
+// overturn each. A key confirmed by a positive find — explicit active (selected)
+// or explicit inactive (revoked) — and an already-ambiguous result do not depend
+// on the list being exhaustive.
+func exhaustivenessDependent(sel selection) bool {
+	switch sel.Outcome {
+	case selectionNoActive, selectionExplicitMissing:
+		return true
+	case selectionSelected:
+		return !sel.Explicit
+	default: // selectionAmbiguous, selectionExplicitRevoked
+		return false
+	}
+}

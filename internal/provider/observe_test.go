@@ -233,6 +233,74 @@ func TestObserveContinuesFromCursor(t *testing.T) {
 	}
 }
 
+func TestObserveThenPlanBlocksOnRateLimitedKeys(t *testing.T) {
+	// End to end: a rate-limited client-key read yields an incomplete observation
+	// with zero keys; a downstream Plan must block as unknown, never emit a
+	// "no active client key; create one" verdict for keys it never read.
+	host := newFakeHost(loadManifest(t)).
+		set(requestProjectRetrieve, 200, projectBody).
+		set(requestClientKeyList, 429, "")
+	material := observe(t, host, validInput()).GetMaterial()
+
+	response := plan(t, planRequest(validInput(), material, runtimeTarget()))
+	if hasActionType(response, providerv0.ActionType_ACTION_TYPE_MANUAL) || hasDiagnostic(response.GetDiagnostics(), DiagNoActiveKey) {
+		t.Fatal("a rate-limited key read must not become a definitive 'no active key' verdict")
+	}
+	if !hasDiagnostic(response.GetDiagnostics(), DiagOutcomeUnknown) {
+		t.Fatal("a rate-limited key read must block downstream as an unknown outcome")
+	}
+}
+
+func TestObserveThenPlanReportsUnknownOnRateLimitedProject(t *testing.T) {
+	// End to end: a rate-limited project read must not be reported downstream as
+	// definitive inaccessibility.
+	host := newFakeHost(loadManifest(t)).
+		set(requestProjectRetrieve, 429, "").
+		set(requestClientKeyList, 200, clientKeyList(clientKey(keyID1, "https://pub1@sentry.io/1", true)))
+	material := observe(t, host, validInput()).GetMaterial()
+
+	response := plan(t, planRequest(validInput(), material, runtimeTarget()))
+	if hasDiagnostic(response.GetDiagnostics(), DiagProjectInaccessible) {
+		t.Fatal("a rate-limited project read must not be reported as inaccessible")
+	}
+	if !hasDiagnostic(response.GetDiagnostics(), DiagOutcomeUnknown) {
+		t.Fatal("a rate-limited project read must be an unknown outcome downstream")
+	}
+}
+
+func TestObserveCallbackIdsAreDistinctAndVaryByPage(t *testing.T) {
+	// Reusing one callback id across pages would let a host dedup distinct reads.
+	// Each descriptor and each cursor page must carry a distinct, non-empty id.
+	host := newFakeHost(loadManifest(t)).
+		set(requestProjectRetrieve, 200, projectBody).
+		set(requestClientKeyList, 200, clientKeyList(clientKey(keyID1, "https://pub1@sentry.io/1", true))).
+		setCursor(requestClientKeyList, "page2", 200, clientKeyList(clientKey(keyID2, "https://pub2@sentry.io/1", true)))
+	server := hostServer(t, host)
+
+	if _, err := server.Observe(t.Context(), &providerv0.ObserveRequest{Context: hostContext(validInput())}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if _, err := server.Observe(t.Context(), &providerv0.ObserveRequest{Context: hostContext(validInput()), Cursor: "page2"}); err != nil {
+		t.Fatalf("observe page 2: %v", err)
+	}
+
+	var keyCallbacks []string
+	for _, id := range host.receivedRequestIDs {
+		if id == "" {
+			t.Fatal("a callback id must not be empty")
+		}
+		if strings.Contains(id, requestClientKeyList) {
+			keyCallbacks = append(keyCallbacks, id)
+		}
+	}
+	// The two client-key reads are distinct logical reads (different pages) and
+	// must not collide on a single callback id, as they did when the id was just
+	// the descriptor name.
+	if len(keyCallbacks) != 2 || keyCallbacks[0] == keyCallbacks[1] {
+		t.Fatalf("paginated key reads must carry distinct callback ids, got %v", keyCallbacks)
+	}
+}
+
 func TestObserveRequiresHost(t *testing.T) {
 	server := testServer(t) // no host wired
 	_, err := server.Observe(t.Context(), &providerv0.ObserveRequest{Context: hostContext(validInput())})

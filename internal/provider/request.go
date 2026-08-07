@@ -64,11 +64,27 @@ func (s *Server) buildExecuteRequest(ctx *providerv0.ProviderContext, descriptor
 	}
 	return &providerv0.ExecuteRequestRequest{
 		Context:           ctx,
-		RequestId:         descriptor.ID,
+		RequestId:         callbackID(ctx, descriptor.ID, query),
 		Request:           planned,
 		Origin:            origin,
 		CredentialHandles: []*providerv0.CredentialHandle{handle},
 	}, nil
+}
+
+// callbackID derives a per-callback request identity that is unique across the
+// descriptors and pages issued within one attempt. Reusing a single id (e.g. the
+// descriptor id) would collide across pagination pages and let a host dedup or
+// reject distinct reads; scoping it to the attempt, descriptor, and cursor keeps
+// each callback distinct while staying stable for a given logical read.
+func callbackID(ctx *providerv0.ProviderContext, descriptorID string, query map[string]*providerv0.PublicValue) string {
+	id := descriptorID
+	if attempt := ctx.GetOperation().GetAttemptId(); attempt != "" {
+		id = attempt + ":" + descriptorID
+	}
+	if cursor := query["cursor"].GetStringValue(); cursor != "" {
+		id += ":" + cursor
+	}
+	return id
 }
 
 func (s *Server) requestDescriptor(id string) (manifest.RequestDescriptor, bool) {

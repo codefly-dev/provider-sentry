@@ -34,6 +34,10 @@ type fakeHost struct {
 	proposals         []*providerv0.ProposeOutputRequest
 	proposeDurable    bool
 	proposeGeneration uint64
+
+	// receivedRequestIDs records the callback id of every ExecuteRequest the
+	// host was handed, so tests can assert each read carries a distinct identity.
+	receivedRequestIDs []string
 }
 
 type cannedResponse struct {
@@ -65,6 +69,7 @@ func (h *fakeHost) setCursor(descriptorID, cursor string, status uint32, body st
 }
 
 func (h *fakeHost) ExecuteRequest(ctx context.Context, in *providerv0.ExecuteRequestRequest, _ ...grpc.CallOption) (*providerv0.ExecuteRequestResponse, error) {
+	h.receivedRequestIDs = append(h.receivedRequestIDs, in.GetRequestId())
 	descriptorID := in.GetRequest().GetRequestDescriptorId()
 	cursor := in.GetRequest().GetQuery()["cursor"].GetStringValue()
 	canned, ok := h.responses[descriptorID+"?"+cursor]
