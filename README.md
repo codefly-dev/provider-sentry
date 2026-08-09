@@ -86,9 +86,22 @@ Sentry test project.
 | `error-tracking@1` + `error-tracking-build@1` projection planning | **Implemented + tested** |
 | Response-policy filtering of poison client-key secrets | **Tested against `core/provider/responsepolicy`** |
 | Error / rate-limit → diagnostic mapping | **Implemented + tested** |
-| `Observe`, `ApplyAction`, `Doctor` (broker-driven) | **Pending** — need the running host; unimplemented from `sdk.Base` |
-| Tier 1 cassettes, Tier 3 live Sentry, Tier 4 starter dogfood | **Pending** — need the host and a dedicated Sentry test project |
+| `Observe`, `ApplyAction`, `Doctor` (broker-driven) | **Implemented + tested in-process** against the `ProviderHost` callback |
+| Tier 1 in-process host tests | **Implemented** — filtering asserted on host-delivered payloads through `core/provider/responsepolicy` |
+| Tier 3 live Sentry, Tier 4 starter dogfood | **Pending** — need the running host and a dedicated Sentry test project |
 | Starter `scripts/setup/sentry.sh` → non-writing shim | **Pending** — gated on plugin parity (tracked in `codefly-dev/module-saas-starter`) |
+
+The broker-driven methods reach Sentry only through the injected `ProviderHost`
+callback (`WithHost`); the running host supplies it, and the tests supply an
+in-process fake that runs the real `core/provider/responsepolicy` filter over
+canned Sentry payloads. Two limitations of the pinned `core` broker keep the
+*live* wiring out of this slice and in the Tier 3 tier: its request path model
+binds a single remote id, so Sentry's two-segment
+`/projects/{org}/{project}/…` endpoints cannot yet route through
+`broker.Session`; and it forwards only response *body* fields, so Sentry's
+`Link`-header pagination cursor is not visible to the provider. The provider
+therefore treats an unconfirmed client-key list as **incomplete** and blocks a
+sole-active selection rather than risk a silent `array[0]`.
 
 See [`docs/mutation-pressure-test.md`](docs/mutation-pressure-test.md) for the
 pure design analysis of the future mutation surface (project/key creation,

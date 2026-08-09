@@ -6,18 +6,26 @@
 // through the host broker's ProviderHost callbacks. It is the observe/project
 // counterexample to Stripe: it declares no mutating request, holds no Sentry
 // management token, and never receives a client-key `secret` or `dsn.secret`.
-// This package implements the offline surface (information, validate, plan,
-// upgrade); the broker-driven surface (Observe, ApplyAction, Doctor) lands with
-// the host runtime and cassettes.
 package provider
 
 import (
+	"context"
 	"fmt"
 
 	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
 	"github.com/codefly-dev/core/provider/manifest"
 	"github.com/codefly-dev/core/provider/sdk"
+	"google.golang.org/grpc"
 )
+
+// Host is the subset of the ProviderHost callback protocol this provider uses.
+// The provider never dials the network; it hands the host an admitted request
+// and receives an already-filtered response, and it asks the host to commit a
+// projection. A real providerv0.ProviderHostClient satisfies this interface.
+type Host interface {
+	ExecuteRequest(ctx context.Context, in *providerv0.ExecuteRequestRequest, opts ...grpc.CallOption) (*providerv0.ExecuteRequestResponse, error)
+	ProposeOutput(ctx context.Context, in *providerv0.ProposeOutputRequest, opts ...grpc.CallOption) (*providerv0.ProposeOutputResponse, error)
+}
 
 // Identity is the verified artifact identity of the running provider, taken
 // from the installed provider.artifact.json descriptor. It binds the binary to
@@ -30,10 +38,11 @@ type Identity struct {
 	ManifestDigest string
 }
 
-// Server implements providerv0.ProviderServer. The offline methods are
-// implemented here; GetProviderInformation is served by the embedded sdk.Base,
-// and the broker-driven methods (Observe, ApplyAction, Doctor) remain
-// unimplemented until the host runtime is available.
+// Server implements providerv0.ProviderServer. GetProviderInformation is served
+// by the embedded sdk.Base; the offline methods (Validate, Plan, UpgradeState)
+// and the broker-driven methods (Observe, ApplyAction, Doctor) are implemented
+// in this package. The broker-driven methods reach Sentry only through the
+// host callback in `host`, which the running host supplies.
 type Server struct {
 	*sdk.Base
 	manifest       *manifest.Manifest
@@ -41,15 +50,26 @@ type Server struct {
 	artifactDigest string
 	manifestDigest string
 	catalogDigest  string
+	host           Host
 }
 
 var _ providerv0.ProviderServer = (*Server)(nil)
+
+// Option configures a Server at construction.
+type Option func(*Server)
+
+// WithHost injects the ProviderHost callback the broker-driven methods use. The
+// running host supplies it; tests supply an in-process fake. Without it, Observe,
+// ApplyAction, and Doctor fail closed rather than reaching a nil callback.
+func WithHost(host Host) Option {
+	return func(s *Server) { s.host = host }
+}
 
 // NewServer builds a provider server from the packaged manifest bytes and the
 // verified artifact identity. It fails closed when the identity does not match
 // the packaged manifest, so a tampered manifest or mismatched descriptor can
 // never be advertised as authentic.
-func NewServer(manifestBytes []byte, id Identity) (*Server, error) {
+func NewServer(manifestBytes []byte, id Identity, options ...Option) (*Server, error) {
 	m, err := manifest.Load(manifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("packaged manifest is invalid: %w", err)
@@ -96,12 +116,16 @@ func NewServer(manifestBytes []byte, id Identity) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	server := &Server{
 		Base:           base,
 		manifest:       m,
 		catalog:        catalog,
 		artifactDigest: id.ArtifactDigest,
 		manifestDigest: id.ManifestDigest,
 		catalogDigest:  catalog.GetDigest(),
-	}, nil
+	}
+	for _, option := range options {
+		option(server)
+	}
+	return server, nil
 }

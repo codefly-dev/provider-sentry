@@ -61,3 +61,7 @@ func publicString(v *providerv0.PublicValue) (string, bool) {
 func publicStringValue(s string) *providerv0.PublicValue {
 	return &providerv0.PublicValue{Kind: &providerv0.PublicValue_StringValue{StringValue: s}}
 }
+
+func publicBoolValue(b bool) *providerv0.PublicValue {
+	return &providerv0.PublicValue{Kind: &providerv0.PublicValue_BoolValue{BoolValue: b}}
+}
